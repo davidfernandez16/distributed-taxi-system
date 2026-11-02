@@ -1,0 +1,11 @@
+[
+    {
+        "id": 1,
+        "availability": "BUSY",
+        "movement": "RUN",
+        "localizacion": [
+            0,
+            0
+        ]
+    }
+]

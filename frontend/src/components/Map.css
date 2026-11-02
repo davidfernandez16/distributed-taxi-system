@@ -1,0 +1,51 @@
+.map-container {
+    display: flex;
+    justify-content: center;
+    margin-top: 20px;
+  }
+  
+  .grid {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .row {
+    display: flex;
+  }
+  
+  .cell {
+    width: 30px;
+    height: 30px;
+    border: 1px solid #ddd;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+  }
+  
+  .entity {
+    font-size: 10px;
+    font-weight: bold;
+    color: white;
+    text-align: center;
+    border-radius: 50%;
+    width: 80%;
+    height: 80%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  
+  .taxi {
+    background-color: green;
+  }
+  
+  .cliente {
+    background-color: yellow;
+    color: black;
+  }
+  
+  .location {
+    background-color: blue;
+  }
+  

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Secretos y certificados
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.csr
+secrets/
+
+# Datos generados
+auditoria.log
+*.log
+
+# Frontend
+node_modules/
+dist/
+build/
+
+# Sistema e IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
