@@ -1,0 +1,10 @@
+Flask
+Flask-Cors
+Flask-SocketIO
+requests
+kafka-python
+mysql-connector-python
+cryptography
+matplotlib
+urllib3
+gevent

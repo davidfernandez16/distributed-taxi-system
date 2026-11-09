@@ -4,7 +4,7 @@ function Auditoria() {
   const [events, setEvents] = useState([]);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:5002/api/auditoria') 
+    fetch('/api/auditoria')
       .then(response => response.json())
       .then(data => setEvents(data))
       .catch(err => console.error('Error fetching auditoria:', err));

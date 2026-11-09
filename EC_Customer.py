@@ -1,8 +1,9 @@
-from kafka import KafkaProducer, KafkaConsumer
+from kafka import KafkaProducer, KafkaConsumer, JsonSerializer
 import json
 import sys
 import time
 import mysql.connector  # Importar mysql.connector para interactuar con MySQL
+from config import DB_CONFIG
 
 # Variables globales
 broker_ip = ""
@@ -12,13 +13,7 @@ request_file = ""  # Se definirá dinámicamente para cada cliente
 requests = []  # Lista para almacenar las solicitudes leídas del archivo
 current_index = 0  # Mantener el seguimiento de la solicitud actual
 
-# Configuración de la base de datos MySQL
-DB_CONFIG = {
-    'user': 'alumno',
-    'password': 'alumno',  # Reemplaza con tu contraseña de MySQL
-    'host': '127.0.0.1',
-    'database': 'EasyCabDB'
-}
+
 
 # Configuración de Kafka
 producer = None
@@ -34,7 +29,7 @@ def setup_kafka():
         # Configuración del productor
         producer = KafkaProducer(
             bootstrap_servers=f'{broker_ip}:{broker_port}',
-            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            value_serializer=JsonSerializer()
         )
 
         # Configuración del consumidor
@@ -45,7 +40,7 @@ def setup_kafka():
             bootstrap_servers=f'{broker_ip}:{broker_port}',
             auto_offset_reset='latest',
             group_id=f'customer_group_{customer_id}_{int(time.time())}',
-            value_deserializer=lambda v: json.loads(v.decode('utf-8'))
+            value_deserializer=JsonSerializer()
         )
 
         print(f"Cliente {customer_id} conectado a Kafka correctamente.")
@@ -107,7 +102,7 @@ def wait_for_response():
             taxi_assigned = True
         elif data.get("status") == "TRIP_COMPLETED" and taxi_assigned:
             print(f"Respuesta recibida de la central: {data}")
-            print("Viaje completado.")
+            
             return True
         elif data.get("status") == "NO_TAXI_AVAILABLE" and not taxi_assigned:
             print(f"Respuesta recibida de la central: {data}")

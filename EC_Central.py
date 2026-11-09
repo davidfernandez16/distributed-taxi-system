@@ -5,7 +5,7 @@ import threading
 from flask_socketio import SocketIO
 import queue
 import sys
-from kafka import KafkaProducer, KafkaConsumer
+from kafka import KafkaProducer, KafkaConsumer, JsonSerializer
 import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -20,6 +20,7 @@ log.setLevel(logging.ERROR)  # Cambia a CRITICAL para ocultar todos los mensajes
 import uuid
 from crypto_utils import encrypt_message, decrypt_message
 import datetime
+from config import DB_CONFIG, CTC_URL
 
 
 
@@ -28,6 +29,10 @@ ultimo_estado_trafico = None
 # Aquí usamos taxi_id -> token para fácil consulta.
 tokens_activos = {}
 CLAVES_TAXIS = {}
+TAXI_KEYS_DIR = os.environ.get(
+    "TAXI_KEYS_DIR",
+    "/run/taxi-keys",
+)
 
 def log_auditoria(ip, action, description):
     # ip: dirección IP de la fuente del evento
@@ -61,12 +66,12 @@ def cargar_claves_taxis():
 
 def get_key_for_taxi(taxi_id):
     # Si la clave no está en el diccionario, la cargamos
-    key_file = f"clave_taxi_{taxi_id}.key"
+    key_file = os.path.join(TAXI_KEYS_DIR, f"taxi-{taxi_id}.key")
     if not os.path.exists(key_file):
         print(f"Error: No se encuentra la clave para el taxi {taxi_id}")
         return None
     with open(key_file, "rb") as f:
-        key = f.read().strip()
+        key = f.read()
     if len(key) not in (16,24,32):
         print(f"Error: La clave del taxi {taxi_id} no es válida.")
         return None
@@ -89,19 +94,11 @@ def invalidar_token_taxi(taxi_id):
         del tokens_activos[taxi_id]
 
 
-# Configuración de la base de datos MySQL
-DB_CONFIG = {
-    'user': 'alumno',
-    'password': 'alumno',  # Reemplaza con tu contraseña de MySQL
-    'host': '127.0.0.1',
-    'database': 'EasyCabDB'
-}
+
 
 producer = None  # Productor de Kafka para enviar respuestas
 mapa_queue = queue.Queue()
 
-# Configuración
-EC_CTC_URL = "http://172.21.42.18:5004/traffic_status"  # URL del API de EC_CTC
 
 def get_db_connection():
     """Obtiene una conexión a la base de datos."""
@@ -115,7 +112,7 @@ def verificar_trafico():
     global ultimo_estado_trafico
     while True:
         try:
-            respuesta = requests.get(EC_CTC_URL)
+            respuesta = requests.get(CTC_URL, timeout=10)
             datos = respuesta.json()
             estado_actual = datos["status"]
 
@@ -273,7 +270,7 @@ def setup_kafka(broker_ip, broker_port):
     try:
         producer = KafkaProducer(
             bootstrap_servers=f'{broker_ip}:{broker_port}',
-            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            value_serializer=JsonSerializer(),
             retries=5,
             acks='all'
         )
@@ -546,7 +543,6 @@ def recibir_solicitudes_taxis():
         bootstrap_servers=f'{broker_ip}:{broker_port}',
         auto_offset_reset='latest',
         group_id='central_taxi_status_group',
-        value_deserializer=lambda x: x  # Importante: no deserializar aquí a JSON, se recibe bytes
     )
     print("Central escuchando estados de taxis vía Kafka...")
     for mensaje in consumer:
@@ -560,7 +556,7 @@ def procesar_solicitudes_clientes():
         bootstrap_servers=f'{broker_ip}:{broker_port}',
         auto_offset_reset='latest',
         group_id='central_solicitudes_group',
-        value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        value_deserializer=JsonSerializer()
     )
     print("Central escuchando solicitudes de clientes...")
     for mensaje in consumer:
@@ -672,20 +668,45 @@ def recibir_notificaciones_viajes():
         bootstrap_servers=f'{broker_ip}:{broker_port}',
         auto_offset_reset='latest',
         group_id='central_trip_status_group',
-        value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        value_deserializer=JsonSerializer()
     )
     print("Central escuchando notificaciones de viajes...")
     for mensaje in consumer:
         data = mensaje.value
+        taxi_id = str(data.get("taxi_id", ""))
+        token = data.get("token")
+
+        if not taxi_id or not token or not validar_token(taxi_id, token):
+            print(
+                "[WARNING] Notificación de viaje rechazada: "
+                "taxi o token no válidos."
+            )
+            log_auditoria(
+                "Desconocido",
+                "Notificación de viaje rechazada",
+                "Token de taxi ausente o no válido.",
+            )
+            continue
+
         if data.get("status") == "TRIP_COMPLETED":
-            print(f"Notificación de viaje completado recibida: {data}")
+            print(
+                f"Viaje completado: taxi {taxi_id}, "
+                f"cliente {data['customer_id']}."
+            )
             # Actualizar la posición y estado del cliente
             actualizar_estado_cliente(
                 cliente_id=data['customer_id'],
                 recogido=False,
                 localizacion=data['destination']
             )
-            enviar_notificacion_cliente(data)
+            notificacion_cliente = {
+                "customer_id": data["customer_id"],
+                "taxi_id": taxi_id,
+                "status": data["status"],
+                "mensaje": data["mensaje"],
+                "destination": data["destination"],
+            }
+            enviar_notificacion_cliente(notificacion_cliente)
             mapa_queue.put("update")
 
             # Registrar el evento en la auditoría
@@ -696,7 +717,10 @@ def recibir_notificaciones_viajes():
             log_auditoria("0.0.0.0", "Viaje completado", f"Taxi {taxi_id} completó viaje para cliente {cliente_id}")
 
         elif data.get("status") == "PICKED_UP":
-            print(f"Notificación de cliente recogido recibida: {data}")
+            print(
+                f"Cliente {data['customer_id']} recogido "
+                f"por taxi {taxi_id}."
+            )
             # Establecer 'recogido' en True para el cliente
             actualizar_estado_cliente(
                 cliente_id=data['customer_id'],
@@ -736,7 +760,7 @@ setup_kafka(broker_ip, broker_port)
 
 # Iniciar hilos para autenticación, recepción de mensajes de taxis y solicitudes de clientes
 central_ip = '0.0.0.0'  # Escuchar en todas las interfaces
-threading.Thread(target=start_taxi_auth_server, args=(broker_ip, central_port)).start()
+threading.Thread(target=start_taxi_auth_server,args=(central_ip, central_port),).start()
 threading.Thread(target=recibir_solicitudes_taxis).start()
 threading.Thread(target=procesar_solicitudes_clientes).start()
 threading.Thread(target=recibir_notificaciones_viajes).start()

@@ -2,13 +2,31 @@ import socket
 import threading
 import sys
 import time
-from kafka import KafkaProducer, KafkaConsumer
+from kafka import KafkaProducer, KafkaConsumer, JsonSerializer
 import json
 import queue
 import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import os
 from crypto_utils import encrypt_message, decrypt_message
+
+TAXI_CERT_FILE = os.environ.get(
+    "TAXI_CERT_FILE",
+    "/run/certs/taxi.crt",
+)
+TAXI_KEY_FILE = os.environ.get(
+    "TAXI_KEY_FILE",
+    "/run/certs/taxi.key",
+)
+CA_CERT_FILE = os.environ.get(
+    "CA_CERT_FILE",
+    "/run/certs/ca.crt",
+)
+REQUEST_TIMEOUT = 10
+
+TAXI_MESSAGE_KEY_FILE = os.environ.get(
+    "TAXI_MESSAGE_KEY_FILE",
+    "/run/taxi-key/message.key",
+)
 
 # Variables globales
 taxi_id = ""
@@ -34,21 +52,16 @@ TAXI_KEY = None  # Clave del taxi
 
 def cargar_clave_taxi():
     global TAXI_KEY
-    key_file = f"clave_taxi_{taxi_id}.key"
+    key_file = TAXI_MESSAGE_KEY_FILE
     with open(key_file, "rb") as f:  # Modo binario
-        TAXI_KEY = f.read().strip()
+        TAXI_KEY = f.read()
 
     # Verificar tamaño y tipo
     if len(TAXI_KEY) not in (16, 24, 32):
         print("Error: La clave no tiene un tamaño válido para AES.")
         sys.exit(1)
 
-    # Aquí imprimes el tipo y la longitud antes de usar la clave
-    print(f"Tipo de TAXI_KEY: {type(TAXI_KEY)} - Longitud: {len(TAXI_KEY)}")
 
-    if not isinstance(TAXI_KEY, bytes):
-        print("Error: La clave no es de tipo bytes.")
-        sys.exit(1)
 
 def registrar_taxi():
     global taxi_id, registered
@@ -58,10 +71,10 @@ def registrar_taxi():
     }
     try:
         # Cargar los certificados del taxi
-        cert = ('certs/taxi_cert.pem', 'certs/taxi_key.pem')
-        # Deshabilitar la verificación SSL (solo para pruebas)
-        response = requests.post(url, json=data, cert=cert, verify=False)
-        if response.status_code == 201:
+        cert=(TAXI_CERT_FILE, TAXI_KEY_FILE)
+        # Autenticación mutua con el EC_Registry
+        response = requests.post(url, json=data, cert=cert, verify=CA_CERT_FILE, timeout=REQUEST_TIMEOUT)
+        if response.status_code in (200, 201):
             print(f"Taxi {taxi_id} registrado con éxito en EC_Registry.")
             registered = True
         else:
@@ -91,7 +104,7 @@ def autenticar_taxi_con_central():
             })
             s.send(mensaje_autenticacion.encode())
             response = s.recv(1024).decode().strip()
-            print(f"Respuesta de la central: {response}")
+            
             if response.startswith("OK#"):
                 parts = response.split("#")
                 # parts = ["OK", "Taxi autenticado y listo", "Token:<token>"]
@@ -102,7 +115,7 @@ def autenticar_taxi_con_central():
                 authenticated = True
                 availability_status = "AVAILABLE"
                 enviar_estado()
-                print(f"Taxi {taxi_id} autenticado con éxito y token recibido: {token_taxi}")
+                print(f"Taxi {taxi_id} autenticado con éxito.")
                 iniciar_hilos_taxi()
             else:
                 print(f"Error en la autenticación del taxi {taxi_id}: {response}")
@@ -114,8 +127,8 @@ def dar_de_baja_taxi():
     global taxi_id, registered, authenticated
     url = f"https://{registry_ip}:{registry_port}/deregister_taxi/{taxi_id}"
     try:
-        cert = ('certs/taxi_cert.pem', 'certs/taxi_key.pem')
-        response = requests.delete(url, cert=cert, verify=False)
+        cert=(TAXI_CERT_FILE, TAXI_KEY_FILE)
+        response = requests.delete(url, cert=cert, verify=CA_CERT_FILE, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             print(f"Taxi {taxi_id} dado de baja exitosamente en EC_Registry.")
             registered = False
@@ -129,7 +142,6 @@ def setup_kafka(broker_ip, broker_port):
     global producer, consumer
     producer = KafkaProducer(
         bootstrap_servers=f'{broker_ip}:{broker_port}',
-        value_serializer=lambda v: v,  # Enviaremos bytes cifrados, no JSON directo
         retries=5,
         acks='all'
     )
@@ -138,7 +150,7 @@ def setup_kafka(broker_ip, broker_port):
         bootstrap_servers=f'{broker_ip}:{broker_port}',
         auto_offset_reset='latest',
         group_id=f'taxi_group_{taxi_id}',
-        value_deserializer=lambda v: json.loads(v.decode('utf-8'))
+        value_deserializer=JsonSerializer()
     )
 
 

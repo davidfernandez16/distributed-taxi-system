@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.key
+*.pem
+*.csr
+certs/
+secrets/
+*.log
+frontend/node_modules/

@@ -4,44 +4,61 @@ import './Map.css';
 
 const Map = () => {
   const [mapData, setMapData] = useState({ taxis: [], clientes: [], locations: [] });
+  const [error, setError] = useState('');
 
   const gridData = useMemo(() => {
     const grid = Array.from({ length: 20 }, () => Array.from({ length: 20 }, () => ({})));
 
     mapData.taxis.forEach((taxi) => {
       const { localizacion_x: x, localizacion_y: y, id, availability } = taxi;
-      grid[y][x].taxi = { id, availability };
+      if (grid[y]?.[x]) grid[y][x].taxi = { id, availability };
     });
 
     mapData.clientes.forEach((cliente) => {
       const { localizacion_x: x, localizacion_y: y, id, recogido } = cliente;
-      if (!recogido) {
+      if (!recogido && grid[y]?.[x]) {
         grid[y][x].cliente = { id };
       }
     });
 
     mapData.locations.forEach((location) => {
       const { pos_x: x, pos_y: y, id } = location;
-      grid[y][x].location = { id };
+      if (grid[y]?.[x]) grid[y][x].location = { id };
     });
 
     return grid;
   }, [mapData]);
 
   useEffect(() => {
-    const socket = io('http://127.0.0.1:5002'); // Cambia la URL si es necesario
+    const controller = new AbortController();
+    fetch('/mapa', { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error('No se pudo cargar el mapa');
+        return response.json();
+      })
+      .then((data) => setMapData(data))
+      .catch((err) => {
+        if (err.name !== 'AbortError') setError(err.message);
+      });
+
+    const socket = io();
 
     socket.on('update_map', (data) => {
       setMapData(data);
+      setError('');
     });
 
+    socket.on('connect_error', () => setError('Sin conexión en tiempo real con Central'));
+
     return () => {
+      controller.abort();
       socket.disconnect();
     };
   }, []);
 
   return (
     <div className="map-container">
+      {error && <p role="alert">{error}</p>}
       <div className="grid">
         {gridData.map((row, rowIndex) => (
           <div key={rowIndex} className="row">

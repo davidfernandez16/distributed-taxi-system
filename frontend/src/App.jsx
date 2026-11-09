@@ -1,7 +1,7 @@
 import React from 'react';
-import Map from './components/Map';
+import Map from './components/Map.jsx';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import Auditoria from './components/Auditoria';
+import Auditoria from './components/Auditoria.jsx';
 
 function App() {
   return (

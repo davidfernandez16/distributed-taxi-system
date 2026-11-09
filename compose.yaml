@@ -1,0 +1,200 @@
+services:
+  mysql:
+    image: mysql:8.4.13
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=TCP -h localhost -u $$MYSQL_USER $$MYSQL_DATABASE -e 'SELECT 1' > /dev/null 2>&1 || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      - easycab_network
+
+  kafka:
+    image: apache/kafka:4.4.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    networks:
+      - easycab_network
+
+  ctc:
+    build: .
+    image: easycab-app:local
+    environment:
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
+      WEATHER_CITY: ${WEATHER_CITY}
+      CTC_INTERACTIVE_MODE: "false"
+    networks:
+      - easycab_network
+
+  central:
+    image: easycab-app:local
+    command: ["python", "EC_Central.py", "kafka", "9092", "5000"]
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      CTC_URL: http://ctc:5001/traffic_status
+    volumes:
+      - ./secrets/taxi-1/message.key:/run/taxi-keys/taxi-1.key:ro
+    ports:
+      - "5002:5002"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      ctc:
+        condition: service_started
+    networks:
+      - easycab_network
+  
+  registry:
+    build: .
+    image: easycab-app:local
+    command: ["python", "EC_Registry.py"]
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REGISTRY_CERT_FILE: /run/certs/registry.crt
+      REGISTRY_KEY_FILE: /run/certs/registry.key
+      CA_CERT_FILE: /run/certs/ca.crt
+    volumes:
+      - ./secrets/registry/registry.crt:/run/certs/registry.crt:ro
+      - ./secrets/registry/registry.key:/run/certs/registry.key:ro
+      - ./secrets/ca/ca.crt:/run/certs/ca.crt:ro
+    ports:
+      - "127.0.0.1:5003:5003"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - easycab_network
+  
+  taxi-1:
+    image: easycab-app:local
+    command:
+      - python
+      - EC_DE.py
+      - "1"
+      - central
+      - "5000"
+      - kafka
+      - "9092"
+      - "5005"
+      - registry
+      - "5003"
+    environment:
+      TAXI_CERT_FILE: /run/certs/taxi.crt
+      TAXI_KEY_FILE: /run/certs/taxi.key
+      CA_CERT_FILE: /run/certs/ca.crt
+      TAXI_MESSAGE_KEY_FILE: /run/taxi-key/message.key
+    volumes:
+      - ./secrets/taxi-1/taxi-1.crt:/run/certs/taxi.crt:ro
+      - ./secrets/taxi-1/taxi-1.key:/run/certs/taxi.key:ro
+      - ./secrets/ca/ca.crt:/run/certs/ca.crt:ro
+      - ./secrets/taxi-1/message.key:/run/taxi-key/message.key:ro
+    depends_on:
+      central:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    stdin_open: true
+    tty: true
+    networks:
+      - easycab_network
+  
+  sensor-1:
+    image: easycab-app:local
+    command:
+      - python
+      - EC_S.py
+      - taxi-1
+      - "5005"
+    stdin_open: true
+    tty: true
+    networks:
+      - easycab_network
+  
+  customer-1:
+    image: easycab-app:local
+    command:
+      - python
+      - EC_Customer.py
+      - kafka
+      - "9092"
+      - "1"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      central:
+        condition: service_started
+    networks:
+      - easycab_network
+
+  frontend:
+    build: ./frontend
+    image: easycab-frontend:local
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      central:
+        condition: service_started
+    networks:
+      - easycab_network
+
+volumes:
+  mysql_data:
+
+networks:
+  easycab_network:
+    driver: bridge

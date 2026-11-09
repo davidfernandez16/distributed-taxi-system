@@ -3,6 +3,7 @@ import requests
 import threading
 import time
 import logging
+import os
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
@@ -10,8 +11,15 @@ log.setLevel(logging.ERROR)
 app = Flask(__name__)
 
 # Configuración inicial
-API_KEY = "os.environ.get("OPENWEATHER_API_KEY")"  # Reemplazar con tu API Key de OpenWeather
-ciudad_actual = "Alicante"  # Ciudad por defecto
+API_KEY = os.environ.get("OPENWEATHER_API_KEY")
+WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
+REQUEST_TIMEOUT = 10  # Tiempo máximo de espera para la solicitud
+if not API_KEY:
+    raise RuntimeError("La variable de entorno OPENWEATHER_API_KEY no está configurada. Por favor, configúrela antes de ejecutar la aplicación.")
+ciudad_actual = os.environ.get("WEATHER_CITY", "Alicante")
+INTERACTIVE_CITY_MODE = (
+    os.environ.get("CTC_INTERACTIVE_MODE", "false").lower() == "true"
+)
 umbral_temperatura = 0  # Umbral para determinar viabilidad del tráfico
 
 # Endpoint para devolver el estado del tráfico
@@ -19,40 +27,64 @@ umbral_temperatura = 0  # Umbral para determinar viabilidad del tráfico
 def verificar_estado_trafico():
     global ciudad_actual, umbral_temperatura
     try:
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={ciudad_actual}&appid={API_KEY}&units=metric"
-        respuesta = requests.get(url)
-        datos = respuesta.json()
+        respuesta = requests.get(
+            WEATHER_API_URL,
+            params={"q": ciudad_actual, "appid": API_KEY, "units": "metric"},
+            timeout=REQUEST_TIMEOUT,
+        )
         
         # Validar si la ciudad no existe
-        if datos.get("cod") == "404":
-            return jsonify({"error": "Ciudad no encontrada", "message": "Verifique el nombre de la ciudad"}), 404
-
+        if respuesta.status_code == 404:
+            return jsonify({
+                "error": "Ciudad no encontrada",
+                "message": "Verifique el nombre de la ciudad",
+            }), 404
+        respuesta.raise_for_status()
+        datos = respuesta.json()
         temperatura = datos["main"]["temp"]
 
         if temperatura < umbral_temperatura:
-            return jsonify({"status": "KO", "temp": temperatura, "message": "Tráfico no viable"}), 200
-        else:
-            return jsonify({"status": "OK", "temp": temperatura, "message": "Tráfico viable"}), 200
+            return jsonify({
+                "status": "KO", 
+                "temp": temperatura, 
+                "message": 
+                "Tráfico no viable"}), 200
+        return jsonify({
+            "status": "OK",
+            "temp": temperatura,
+            "message": "Tráfico viable",
+        }), 200
 
-    except Exception as e:
-        return jsonify({"error": str(e), "message": "Error al obtener el estado del tráfico"}), 500
+    except (requests.RequestException, ValueError, KeyError):
+        return jsonify({
+            "error": "Servicio meteorológico no disponible",
+            "message": "No se pudo obtener el estado del tráfico. Inténtelo más tarde.",
+        }), 502
+    
 
+    
 def cambiar_ciudad():
     global ciudad_actual
     while True:
         nueva_ciudad = input("Introduce el nombre de la nueva ciudad: ")
         if nueva_ciudad:
-            url = f"http://api.openweathermap.org/data/2.5/weather?q={nueva_ciudad}&appid={API_KEY}&units=metric"
             try:
-                respuesta = requests.get(url)
-                datos = respuesta.json()
-                if datos.get("cod") == "404":
+                respuesta = requests.get(
+                    WEATHER_API_URL,
+                    params={"q": nueva_ciudad, "appid": API_KEY, "units": "metric"},
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if respuesta.status_code == 404:
                     print(f"Error: La ciudad '{nueva_ciudad}' no existe. Intente nuevamente.")
-                else:
-                    ciudad_actual = nueva_ciudad
-                    print(f"Ciudad cambiada a {ciudad_actual}")
-            except Exception as e:
-                print(f"Error al verificar la ciudad: {e}")
+                    continue
+
+                respuesta.raise_for_status()
+                ciudad_actual = nueva_ciudad
+                print(f"Ciudad cambiada a {ciudad_actual}")
+
+            except (requests.RequestException, ValueError):
+                print("No se pudo verificar la ciudad con el servicio meteorológico.")
 
 
 # Ejecutar servidor Flask en un hilo aparte
@@ -61,5 +93,8 @@ def ejecutar_servidor():
 
 # Iniciar todo
 if __name__ == "__main__":
-    threading.Thread(target=ejecutar_servidor, daemon=True).start()
-    cambiar_ciudad()
+    if INTERACTIVE_CITY_MODE:
+        threading.Thread(target=ejecutar_servidor, daemon=True).start()
+        cambiar_ciudad()
+    else:
+        ejecutar_servidor()
